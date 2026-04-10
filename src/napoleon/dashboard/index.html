@@ -1,0 +1,761 @@
+<!DOCTYPE html>
+<!--
+  Project Dashboard
+  Data lives in data/*.json — one file per project.
+
+  Expected JSON format:
+  {
+    "id":              "short-kebab-id",
+    "title":           "Human-Readable Project Title",
+    "description":     "One-liner summarizing the project.",
+    "committedTo":     "Customer (external) | Internal | etc.",
+    "deadline":        "YYYY-MM-DD",
+    "minimumDelivery": "What must ship if time runs out. null if flexible.",
+    "status":          "planning | active | paused | completed",
+    "priority":        1,  // lower = higher priority, used for sort order
+    "constraints":     ["Free-text constraint", "..."],
+    "unknowns":        ["Free-text unknown / risk", "..."],
+    "externalDeps": [
+      {
+        "description": "What you're waiting on",
+        "resolved":     false,
+        "resolvedDate": "YYYY-MM-DD or null"
+      }
+    ],
+    "tasks": [
+      {
+        "id":            "short-kebab-id (unique within project)",
+        "title":         "Task title",
+        "description":   "What this task involves",
+        "status":        "not_started | in_progress | completed",
+        "risk":          "low | medium | high",
+        "blockedBy":     ["other-task-id", "..."],
+        "est50": 0.5,      // 50% confidence estimate (days), or null
+        "est90": 1.5,      // 90% confidence estimate (days), or null
+        "atomic": false    // true = fully decomposed, a real leaf in the task tree
+      }
+    ]
+  }
+
+  Notes:
+  - Task "blocked" status is auto-calculated from blockedBy references.
+  - blockedBy IDs reference other task IDs within the same project.
+  - est50/est90 follow critical chain methodology (50% and 90% confidence).
+  - null means "not yet estimated" — the dashboard defaults to 0.5 for layout.
+
+  File structure:
+  - index.html     Tab shell, shared CSS, data layer, polling
+  - overview.js    High-level dashboard: capacity, next-up, readiness
+  - planning.js    Single-project focus: define plan, validate estimates
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Project Dashboard</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --bg-raised: #0f1319;
+    --surface: #161b22;
+    --surface-hover: #1c2129;
+    --border: #30363d;
+    --border-light: #21262d;
+    --text: #e6edf3;
+    --text-muted: #8b949e;
+    --text-dim: #484f58;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --yellow: #d29922;
+    --red: #f85149;
+    --orange: #db6d28;
+    --purple: #bc8cff;
+    --radius: 10px;
+    --radius-sm: 6px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    padding: 2rem 2.5rem;
+    max-width: 1400px;
+    margin: 0 auto;
+  }
+
+  /* ── Header + Tabs ── */
+  .app-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    margin-bottom: 2rem;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0;
+  }
+
+  .app-header-left h1 {
+    font-size: 1.4rem;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+  }
+
+  .app-header-left .header-date {
+    font-size: 0.78rem;
+    color: var(--text-dim);
+    margin-bottom: 0.6rem;
+  }
+
+  .tab-bar {
+    display: flex;
+    gap: 2px;
+  }
+
+  .tab-btn {
+    padding: 0.5rem 1.25rem;
+    font-size: 0.82rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    background: none;
+    border: 1px solid transparent;
+    border-bottom: none;
+    border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+    cursor: pointer;
+    position: relative;
+    bottom: -1px;
+    font-family: inherit;
+    transition: color 0.15s, background 0.15s;
+  }
+
+  .tab-btn:hover { color: var(--text); background: rgba(255,255,255,0.02); }
+
+  .tab-btn.active {
+    color: var(--text);
+    background: var(--bg);
+    border-color: var(--border);
+  }
+
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+
+  /* ── Shared: Panels ── */
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.25rem 1.5rem;
+  }
+
+  .panel-title {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-dim);
+    margin-bottom: 1rem;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .panel-title::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--border-light);
+  }
+
+  /* ── Shared: Info panels ── */
+  .info-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .info-panel {
+    background: var(--bg);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    padding: 1rem;
+  }
+
+  .info-panel h3 {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-dim);
+    margin-bottom: 0.5rem;
+    font-weight: 600;
+  }
+
+  .info-panel ul { list-style: none; font-size: 0.85rem; }
+  .info-panel li { padding: 0.25rem 0; padding-left: 1rem; position: relative; line-height: 1.5; }
+  .info-panel li::before { content: "\2022"; position: absolute; left: 0; color: var(--text-dim); }
+
+  .dep-resolved { color: var(--green); }
+  .dep-resolved::before { content: "\2713" !important; color: var(--green) !important; }
+  .dep-pending { color: var(--yellow); }
+  .dep-pending::before { content: "\25CB" !important; color: var(--yellow) !important; }
+
+  /* ── Shared: Section titles ── */
+  .section-title {
+    font-size: 0.8rem;
+    font-weight: 600;
+    margin-bottom: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-dim);
+  }
+
+  /* ── Shared: Task table ── */
+  .task-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+  }
+
+  .task-table th {
+    text-align: left;
+    padding: 0.6rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-dim);
+    font-weight: 600;
+  }
+
+  .task-table td {
+    padding: 0.65rem 0.75rem;
+    border-bottom: 1px solid var(--border-light);
+    vertical-align: top;
+  }
+
+  .task-table tr:hover td { background: rgba(255,255,255,0.01); }
+  .task-table tr:last-child td { border-bottom: none; }
+  .task-title-cell { font-weight: 500; }
+  .task-desc { font-size: 0.78rem; color: var(--text-dim); margin-top: 0.2rem; line-height: 1.45; }
+
+  /* ── Shared: Badges + tags ── */
+  .badge {
+    display: inline-block;
+    padding: 0.2rem 0.55rem;
+    border-radius: 12px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    white-space: nowrap;
+    letter-spacing: 0.02em;
+  }
+
+  .status-not_started { background: rgba(139, 148, 158, 0.1); color: var(--text-dim); }
+  .status-in_progress { background: rgba(88, 166, 255, 0.12); color: var(--accent); }
+  .status-completed { background: rgba(63, 185, 80, 0.12); color: var(--green); }
+  .status-blocked { background: rgba(248, 81, 73, 0.12); color: var(--red); }
+
+  .risk-low { color: var(--green); }
+  .risk-medium { color: var(--yellow); }
+  .risk-high { color: var(--red); font-weight: 600; }
+
+  .blocker-tag {
+    display: inline-block;
+    padding: 0.15rem 0.45rem;
+    background: rgba(248, 81, 73, 0.08);
+    border: 1px solid rgba(248, 81, 73, 0.15);
+    border-radius: 4px;
+    font-size: 0.7rem;
+    color: var(--red);
+    margin-right: 0.25rem;
+  }
+
+  .deadline-badge {
+    padding: 0.25rem 0.7rem;
+    border-radius: 20px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    white-space: nowrap;
+    letter-spacing: 0.01em;
+  }
+
+  .deadline-ok { background: rgba(63, 185, 80, 0.1); color: var(--green); }
+  .deadline-warn { background: rgba(210, 153, 34, 0.12); color: var(--yellow); }
+  .deadline-danger { background: rgba(248, 81, 73, 0.12); color: var(--red); }
+
+  .min-delivery {
+    font-size: 0.85rem;
+    padding: 0.75rem 1rem;
+    background: rgba(248, 81, 73, 0.05);
+    border-left: 3px solid var(--red);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    margin-top: 1.25rem;
+    color: var(--text-muted);
+  }
+
+  .min-delivery strong { color: var(--red); }
+
+  .loading {
+    text-align: center;
+    padding: 4rem;
+    color: var(--text-dim);
+  }
+
+  /* ── Overview: Command center grid ── */
+  .command-center {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.25rem;
+    margin-bottom: 2rem;
+  }
+
+  .command-center-full { grid-column: 1 / -1; }
+
+  /* ── Overview: Capacity stats ── */
+  .capacity-summary {
+    display: flex;
+    gap: 2.5rem;
+    margin-bottom: 1.25rem;
+  }
+
+  .capacity-stat { display: flex; flex-direction: column; }
+  .capacity-stat .value { font-size: 1.6rem; font-weight: 700; letter-spacing: -0.02em; line-height: 1.2; }
+  .capacity-stat .label { color: var(--text-dim); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; margin-top: 0.15rem; }
+  .capacity-stat.over .value { color: var(--red); }
+  .capacity-stat.ok .value { color: var(--green); }
+  .capacity-stat.tight .value { color: var(--yellow); }
+
+  /* ── Overview: Capacity bar ── */
+  .capacity-bar-container {
+    position: relative;
+    height: 40px;
+    background: rgba(255,255,255,0.02);
+    border-radius: var(--radius-sm);
+    overflow: visible;
+    margin-bottom: 0.75rem;
+    border: 1px solid var(--border-light);
+  }
+
+  .capacity-bar-segment {
+    position: absolute;
+    top: 6px;
+    height: 28px;
+    border-radius: 4px;
+    min-width: 3px;
+    font-size: 0.7rem;
+    line-height: 28px;
+    padding: 0 8px;
+    color: #fff;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: default;
+    transition: opacity 0.15s;
+  }
+
+  .capacity-bar-segment:hover { opacity: 1 !important; filter: brightness(1.2); }
+
+  .capacity-deadline-marker {
+    position: absolute;
+    top: -2px;
+    bottom: -2px;
+    width: 2px;
+    border-radius: 1px;
+    z-index: 2;
+  }
+
+  .capacity-deadline-label {
+    position: absolute;
+    top: -20px;
+    transform: translateX(-50%);
+    font-size: 0.62rem;
+    font-weight: 600;
+    white-space: nowrap;
+    letter-spacing: 0.02em;
+  }
+
+  .capacity-legend {
+    display: flex;
+    gap: 1.25rem;
+    font-size: 0.72rem;
+    color: var(--text-dim);
+  }
+
+  /* ── Overview: Next Up ── */
+  .next-up-list { display: flex; flex-direction: column; gap: 0.6rem; }
+
+  .next-up-item {
+    background: var(--bg);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    padding: 0.85rem 1rem;
+    border-left: 3px solid var(--accent);
+    transition: border-color 0.15s, background 0.15s;
+  }
+
+  .next-up-item:hover { background: var(--bg-raised); }
+
+  .next-up-project {
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-dim);
+    margin-bottom: 0.3rem;
+    font-weight: 600;
+  }
+
+  .next-up-task { font-weight: 600; font-size: 0.88rem; line-height: 1.35; }
+  .next-up-desc { font-size: 0.78rem; color: var(--text-dim); margin-top: 0.25rem; line-height: 1.45; }
+  .next-up-risk { font-size: 0.7rem; margin-top: 0.4rem; color: var(--text-dim); }
+
+  /* ── Overview: Readiness ── */
+  .readiness-list { display: flex; flex-direction: column; gap: 0.6rem; }
+
+  .readiness-item {
+    background: var(--bg);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    padding: 0.85rem 1rem;
+    transition: background 0.15s;
+  }
+
+  .readiness-item:hover { background: var(--bg-raised); }
+
+  .readiness-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5rem;
+  }
+
+  .readiness-project { font-weight: 600; font-size: 0.88rem; }
+
+  .readiness-grade {
+    padding: 0.2rem 0.6rem;
+    border-radius: 12px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+
+  .grade-well-defined { background: rgba(63, 185, 80, 0.1); color: var(--green); }
+  .grade-partial { background: rgba(210, 153, 34, 0.1); color: var(--yellow); }
+  .grade-needs-detail { background: rgba(248, 81, 73, 0.1); color: var(--red); }
+
+  .readiness-factors { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+
+  .readiness-factor {
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid var(--border-light);
+  }
+
+  .readiness-factor.warn { color: var(--yellow); border-color: rgba(210, 153, 34, 0.2); }
+  .readiness-factor.bad { color: var(--red); border-color: rgba(248, 81, 73, 0.2); }
+  .readiness-factor.ok { color: var(--green); border-color: rgba(63, 185, 80, 0.2); }
+
+  /* ── Overview: Project details (collapsible) ── */
+  .project {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 1rem;
+    overflow: hidden;
+    transition: border-color 0.15s;
+  }
+
+  .project:hover { border-color: #3d444d; }
+
+  .project-header {
+    padding: 0.85rem 1.25rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.15s;
+  }
+
+  .project-header:hover { background: var(--surface-hover); }
+
+  .project-header-left { display: flex; align-items: center; gap: 0.75rem; }
+
+  .project-toggle {
+    color: var(--text-dim);
+    font-size: 0.7rem;
+    transition: transform 0.2s ease;
+  }
+
+  .project-toggle.open { transform: rotate(90deg); }
+
+  .project-title { font-size: 1rem; font-weight: 600; }
+
+  .project-meta {
+    display: flex;
+    gap: 1.25rem;
+    font-size: 0.78rem;
+    color: var(--text-dim);
+  }
+
+  .project-body {
+    padding: 0 1.25rem 1.25rem;
+    display: none;
+    border-top: 1px solid var(--border-light);
+    margin-top: 0;
+    padding-top: 1.25rem;
+  }
+
+  .project-body.open { display: block; }
+
+  /* ── Overview: Details section header ── */
+  .details-header {
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-dim);
+    margin-bottom: 1rem;
+    margin-top: 0.5rem;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  .details-header::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--border-light);
+  }
+</style>
+</head>
+<body>
+
+<div class="app-header">
+  <div class="app-header-left">
+    <h1>Project Dashboard</h1>
+    <div class="header-date" id="header-date"></div>
+  </div>
+  <div class="tab-bar">
+    <button class="tab-btn active" data-tab="overview">Overview</button>
+    <button class="tab-btn" data-tab="planning">Planning</button>
+  </div>
+</div>
+
+<div class="tab-content active" id="tab-overview"></div>
+<div class="tab-content" id="tab-planning"></div>
+
+<script>
+/* ── Shared data layer ── */
+const PROJECT_HASH = location.hash.slice(1);
+function apiUrl(endpoint) {
+  return endpoint + (PROJECT_HASH ? (endpoint.includes('?') ? '&' : '?') + 'p=' + PROJECT_HASH : '');
+}
+
+const TODAY = new Date();
+TODAY.setHours(0, 0, 0, 0);
+
+const PROJECT_COLORS = [
+  '#58a6ff', '#bc8cff', '#f0883e', '#3fb950', '#f778ba', '#79c0ff'
+];
+
+const DEFAULT_EST = 0.5;  // fallback when est50/est90 are null
+
+document.getElementById('header-date').textContent =
+  TODAY.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+
+/* ── Shared utilities ── */
+function daysUntil(dateStr) {
+  const d = new Date(dateStr);
+  d.setHours(0, 0, 0, 0);
+  return Math.ceil((d - TODAY) / (1000 * 60 * 60 * 24));
+}
+
+function formatDate(dateStr) {
+  return new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+function resolveTaskStatus(task, taskMap) {
+  if (task.status === 'completed') return 'completed';
+  if (task.status === 'in_progress') return 'in_progress';
+  const isBlocked = task.blockedBy.some(id => {
+    const blocker = taskMap[id];
+    return blocker && blocker.status !== 'completed';
+  });
+  return isBlocked ? 'blocked' : task.status;
+}
+
+function statusLabel(s) {
+  return { not_started: 'Not Started', in_progress: 'In Progress', completed: 'Completed', blocked: 'Blocked' }[s] || s;
+}
+
+function topoSort(tasks) {
+  const taskMap = {};
+  tasks.forEach(t => taskMap[t.id] = t);
+  const visited = new Set();
+  const result = [];
+  function visit(task) {
+    if (visited.has(task.id)) return;
+    visited.add(task.id);
+    for (const depId of task.blockedBy) {
+      if (taskMap[depId]) visit(taskMap[depId]);
+    }
+    result.push(task);
+  }
+  tasks.forEach(t => visit(t));
+  return result;
+}
+
+function buildTaskMap(project) {
+  const m = {};
+  project.tasks.forEach(t => m[t.id] = t);
+  return m;
+}
+
+function shortTitle(title) {
+  return title.split('\u2014')[0].split('\u2194')[0].trim();
+}
+
+function deadlineClass(days) {
+  return days <= 3 ? 'deadline-danger' : days <= 10 ? 'deadline-warn' : 'deadline-ok';
+}
+
+function assessReadiness(project) {
+  const factors = [];
+  let score = 100;
+
+  const noEstimate = project.tasks.filter(t => t.est50 == null && t.status !== 'completed').length;
+  if (noEstimate > 0) {
+    factors.push({ label: `${noEstimate} tasks unestimated`, cls: noEstimate > 2 ? 'bad' : 'warn' });
+    score -= noEstimate * 8;
+  }
+
+  const notAtomic = project.tasks.filter(t => !t.atomic && t.status !== 'completed').length;
+  if (notAtomic > 0) {
+    factors.push({ label: `${notAtomic} not yet atomic`, cls: notAtomic > 3 ? 'bad' : 'warn' });
+    score -= notAtomic * 5;
+  }
+
+  const highRisk = project.tasks.filter(t => t.risk === 'high' && t.status !== 'completed').length;
+  if (highRisk > 0) {
+    factors.push({ label: `${highRisk} high-risk`, cls: 'bad' });
+    score -= highRisk * 12;
+  }
+
+  if (project.unknowns.length > 0) {
+    factors.push({ label: `${project.unknowns.length} unknowns`, cls: project.unknowns.length > 2 ? 'bad' : 'warn' });
+    score -= project.unknowns.length * 10;
+  }
+
+  const unresolvedDeps = project.externalDeps.filter(d => !d.resolved).length;
+  if (unresolvedDeps > 0) {
+    factors.push({ label: `${unresolvedDeps} ext deps pending`, cls: 'bad' });
+    score -= unresolvedDeps * 15;
+  }
+
+  const completed = project.tasks.filter(t => t.status === 'completed').length;
+  if (completed > 0) {
+    factors.push({ label: `${completed}/${project.tasks.length} done`, cls: 'ok' });
+  }
+
+  score = Math.max(0, Math.min(100, score));
+  let grade, gradeClass;
+  if (score >= 70) { grade = 'Well Defined'; gradeClass = 'grade-well-defined'; }
+  else if (score >= 40) { grade = 'Partially Defined'; gradeClass = 'grade-partial'; }
+  else { grade = 'Needs Detail'; gradeClass = 'grade-needs-detail'; }
+
+  return { score, grade, gradeClass, factors };
+}
+
+/* ── Data loading ── */
+async function loadProjects() {
+  const res = await fetch(apiUrl('/api/projects'));
+  const projects = await res.json();
+  projects.sort((a, b) => (a.priority || 99) - (b.priority || 99) || new Date(a.deadline) - new Date(b.deadline));
+  return projects;
+}
+
+/* ── UI State (persisted to localStorage) ── */
+const STATE_KEY = 'napoleon-dashboard';
+
+function loadState() {
+  try { return JSON.parse(localStorage.getItem(STATE_KEY)) || {}; }
+  catch { return {}; }
+}
+
+function saveState(patch) {
+  const state = { ...loadState(), ...patch };
+  localStorage.setItem(STATE_KEY, JSON.stringify(state));
+  return state;
+}
+
+/* ── Tab routing ── */
+let uiState = loadState();
+let activeTab = uiState.activeTab || 'overview';
+let projects = [];
+
+// Apply saved tab on load
+function applyActiveTab() {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === activeTab));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.toggle('active', c.id === 'tab-' + activeTab));
+}
+applyActiveTab();
+
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    activeTab = btn.dataset.tab;
+    saveState({ activeTab });
+    applyActiveTab();
+    renderActiveTab();
+  });
+});
+
+function renderActiveTab() {
+  if (activeTab === 'overview') renderOverview(projects);
+  else if (activeTab === 'planning') renderPlanning(projects);
+}
+
+/* ── Polling ── */
+let knownHash = null;
+let knownUiHash = null;
+let knownStarted = null;
+
+async function refresh() {
+  projects = await loadProjects();
+  renderActiveTab();
+}
+
+async function pollForChanges() {
+  try {
+    const res = await fetch(apiUrl('/api/hash'));
+    const { hash, uiHash, started } = await res.json();
+    // Server restarted or dashboard files changed — full reload
+    if ((knownStarted !== null && started !== knownStarted) ||
+        (knownUiHash !== null && uiHash !== knownUiHash)) {
+      location.reload();
+      return;
+    }
+    knownStarted = started;
+    knownUiHash = uiHash;
+    if (knownHash === null) {
+      knownHash = hash;
+    } else if (hash !== knownHash) {
+      knownHash = hash;
+      await refresh();
+    }
+  } catch (e) {}
+}
+
+async function init() {
+  await refresh();
+  setInterval(pollForChanges, 2000);
+}
+
+init();
+</script>
+<script src="overview.js"></script>
+<script src="planning.js"></script>
+</body>
+</html>
