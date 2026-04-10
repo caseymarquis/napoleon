@@ -1,0 +1,9 @@
+{
+  "name": "napoleon",
+  "version": "0.1.0",
+  "description": "Personal project intelligence dashboard. Strategy, not status.",
+  "author": {
+    "name": "Casey Marquis"
+  },
+  "keywords": ["projects", "planning", "dashboard", "estimates", "tasks"]
+}

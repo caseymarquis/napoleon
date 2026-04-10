@@ -1,0 +1,17 @@
+{
+  "name": "napoleon",
+  "owner": {
+    "name": "Casey Marquis"
+  },
+  "metadata": {
+    "description": "Personal project intelligence dashboard"
+  },
+  "plugins": [
+    {
+      "name": "napoleon",
+      "source": "./plugins/napoleon",
+      "description": "Strategy, not status. Project dashboard with inline editing, capacity planning, and AI-powered task management.",
+      "version": "0.1.0"
+    }
+  ]
+}
