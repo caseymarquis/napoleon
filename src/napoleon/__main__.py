@@ -1,25 +1,53 @@
-"""Napoleon CLI — personal project intelligence.
+"""Napoleon — personal project intelligence. Strategy, not status.
 
-Usage:
-    napoleon serve              Start the dashboard server
-    napoleon serve --stop       Stop the server
-    napoleon serve --fg         Run server in foreground
-    napoleon register <path>    Register a project
-    napoleon list               List registered projects
-    napoleon projects           List projects in current session
-    napoleon tasks <project>    List tasks for a project
-    napoleon task-add <project> <title> [--key value ...]
-    napoleon task-done <project> <task>
-    napoleon task-update <project> <task> --key value [...]
-    napoleon task-remove <project> <task>
-    napoleon project-add <id> <title> [--key value ...]
+A dashboard and CLI for managing complex projects with AI.
+Break down work, estimate with confidence, track what matters.
+
+Getting started:
+    cd my-project                   Navigate to any git repo
+    napoleon open                   Open the dashboard in your browser
+    napoleon new my-project "My Project"  Create your first project
+    napoleon add my-project "First task"  Add a task to it
+
+Napoleon auto-detects which project you're in from the git remote URL.
+Each repo gets its own isolated data store. Just cd into a repo and go.
+
+Server:
+    napoleon serve                  Start the dashboard (daemonizes)
+    napoleon serve --stop           Stop the dashboard
+    napoleon serve --fg             Run in foreground (debugging)
+    napoleon open                   Start server and open dashboard in browser
+
+Projects:
+    napoleon projects               List projects in current repo
+    napoleon new <id> <title>       Create a new project
+        [--deadline YYYY-MM-DD] [--priority N] [--committed-to WHO]
+        [--description TEXT]
+
+Tasks:
+    napoleon tasks <project>        List tasks for a project
+    napoleon add <project> <title>  Add a task
+        [--id ID] [--description TEXT] [--risk low|medium|high]
+        [--est50 N] [--est90 N] [--atomic] [--at INDEX]
+    napoleon done <project> <task>  Mark a task complete
+    napoleon update <project> <task>  Update task fields
+        [--est50 N] [--est90 N] [--risk LEVEL] [--description TEXT]
+        [--status STATUS] [--atomic true|false]
+    napoleon rm <project> <task>    Remove a task
+
+Metadata:
     napoleon unknowns <project> list|add|remove [text|index]
     napoleon constraints <project> list|add|remove [text|index]
-    napoleon help               Show this help
+
+Options:
+    napoleon help                   Show this help
+    napoleon --version              Show version
 """
 
+import hashlib
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -28,24 +56,21 @@ NAPOLEON_DIR = XDG_DATA / "napoleon"
 
 
 def get_phash():
-    """Get project hash from --phash flag, env var, or session file."""
-    args = sys.argv
-    if "--phash" in args:
-        idx = args.index("--phash")
-        if idx + 1 < len(args):
-            return args[idx + 1]
-    phash = os.environ.get("NAPOLEON_PHASH")
-    if phash:
-        return phash
-    ppid = os.environ.get("PPID") or str(os.getppid())
-    session_file = Path(f"/tmp/napoleon-{ppid}")
-    if session_file.exists():
-        return session_file.read_text().strip()
-    return None
+    """Compute project hash from git remote URL."""
+    try:
+        url = subprocess.check_output(
+            ["git", "remote", "get-url", "origin"],
+            stderr=subprocess.DEVNULL
+        ).decode().strip()
+        return hashlib.md5(url.encode()).hexdigest()[:12]
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
 
 
 def data_dir(phash):
-    return NAPOLEON_DIR / "projects" / phash / "data"
+    d = NAPOLEON_DIR / "projects" / phash / "data"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def load_project(ddir, project_id):
@@ -60,18 +85,21 @@ def save_project(filepath, data):
     filepath.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
 
 
+def cmd_open():
+    import webbrowser
+    from napoleon.serve import run, is_running, PORT
+    phash = require_phash()
+    if not is_running():
+        run()
+    url = f"http://localhost:{PORT}/#{phash}"
+    webbrowser.open(url)
+    print(url)
+
+
 def cmd_serve(args):
-    from napoleon.serve import stop, run, list_projects, register_project
+    from napoleon.serve import stop, run
     if "--stop" in args:
         stop()
-    elif "--list" in args:
-        list_projects()
-    elif "--register" in args:
-        idx = args.index("--register")
-        if idx + 1 < len(args):
-            register_project(args[idx + 1])
-        else:
-            print("Usage: napoleon serve --register <path>", file=sys.stderr)
     elif "--fg" in args:
         run(foreground=True)
     else:
@@ -80,10 +108,11 @@ def cmd_serve(args):
 
 def cmd_projects(phash):
     ddir = data_dir(phash)
-    if not ddir.exists():
-        print("No data directory. Register a project first.")
+    files = sorted(ddir.glob("*.json"))
+    if not files:
+        print("No projects yet. Run 'napoleon new <id> <title>' to create one.")
         return
-    for f in sorted(ddir.glob("*.json")):
+    for f in files:
         data = json.loads(f.read_text())
         total = len(data["tasks"])
         done = sum(1 for t in data["tasks"] if t["status"] == "completed")
@@ -166,7 +195,6 @@ def cmd_task_remove(phash, project_id, task_id):
 
 def cmd_project_add(phash, project_id, title, kwargs):
     ddir = data_dir(phash)
-    ddir.mkdir(parents=True, exist_ok=True)
     filepath = ddir / f"{project_id}.json"
     if filepath.exists():
         print(f"Project file already exists: {filepath}")
@@ -244,7 +272,7 @@ def parse_kv_args(args):
 def require_phash():
     phash = get_phash()
     if not phash:
-        print("No project hash. Run 'napoleon register <path>' or set NAPOLEON_PHASH.", file=sys.stderr)
+        print("Not in a git repo with a remote. Run 'napoleon help' for setup instructions.", file=sys.stderr)
         sys.exit(1)
     return phash
 
@@ -252,19 +280,12 @@ def require_phash():
 def main():
     args = sys.argv[1:]
 
-    # Strip --phash <val> from args for subcommand parsing
-    clean = []
-    i = 0
-    while i < len(args):
-        if args[i] == "--phash" and i + 1 < len(args):
-            i += 2
-        else:
-            clean.append(args[i])
-            i += 1
-    args = clean
-
     if not args or args[0] in ("help", "--help", "-h"):
         print(__doc__)
+        return
+
+    if args[0] == "--version":
+        print("napoleon 0.1.0")
         return
 
     cmd = args[0]
@@ -272,27 +293,21 @@ def main():
 
     if cmd == "serve":
         cmd_serve(rest)
-    elif cmd == "register" and rest:
-        from napoleon.serve import register_project, run, is_running
-        if not is_running():
-            run()
-        register_project(rest[0])
-    elif cmd == "list":
-        from napoleon.serve import list_projects
-        list_projects()
+    elif cmd == "open":
+        cmd_open()
     elif cmd == "projects":
         cmd_projects(require_phash())
     elif cmd == "tasks" and rest:
         cmd_tasks(require_phash(), rest[0])
-    elif cmd == "task-add" and len(rest) >= 2:
+    elif cmd == "add" and len(rest) >= 2:
         cmd_task_add(require_phash(), rest[0], rest[1], parse_kv_args(rest[2:]))
-    elif cmd == "task-done" and len(rest) >= 2:
+    elif cmd == "done" and len(rest) >= 2:
         cmd_task_done(require_phash(), rest[0], rest[1])
-    elif cmd == "task-update" and len(rest) >= 2:
+    elif cmd == "update" and len(rest) >= 2:
         cmd_task_update(require_phash(), rest[0], rest[1], parse_kv_args(rest[2:]))
-    elif cmd == "task-remove" and len(rest) >= 2:
+    elif cmd == "rm" and len(rest) >= 2:
         cmd_task_remove(require_phash(), rest[0], rest[1])
-    elif cmd == "project-add" and len(rest) >= 2:
+    elif cmd == "new" and len(rest) >= 2:
         cmd_project_add(require_phash(), rest[0], rest[1], parse_kv_args(rest[2:]))
     elif cmd == "unknowns" and len(rest) >= 2:
         cmd_list_field(require_phash(), rest[0], "unknowns", rest[1], rest[2] if len(rest) > 2 else None)
