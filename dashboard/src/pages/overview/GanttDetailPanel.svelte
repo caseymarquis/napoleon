@@ -2,6 +2,7 @@
 	import type { Project } from './OverviewPageContract';
 	import { formatDate } from './utils';
 	import { Badge } from '$lib/components/ui/badge';
+	import { Button } from '$lib/components/ui/button';
 	import { Checkbox } from '$lib/components/ui/checkbox';
 	import * as Select from '$lib/components/ui/select';
 	import QuickEstimate from './QuickEstimate.svelte';
@@ -10,10 +11,12 @@
 		task,
 		project,
 		onUpdateTask,
+		onClose,
 	}: {
 		task: any;
 		project: Project | undefined;
 		onUpdateTask?: (projectId: string, taskId: string, updates: Record<string, any>) => void;
+		onClose?: () => void;
 	} = $props();
 
 	let done = $derived(project ? project.tasks.filter((t) => t.status === 'completed').length : 0);
@@ -31,7 +34,10 @@
 	}
 </script>
 
-<div class="mt-3 rounded-md border border-border bg-card p-4">
+<div class="mt-3 rounded-md border border-border bg-card p-4 relative">
+	{#if onClose}
+		<Button variant="ghost" size="sm" class="absolute top-2 right-2 h-6 w-6 p-0 text-muted-foreground" onclick={onClose}>✕</Button>
+	{/if}
 	{#if task.type === 'summary' && project}
 		<div class="mb-1 text-sm font-semibold">{project.title}</div>
 		{#if project.description}

@@ -83,6 +83,7 @@
 			contract.loading = false;
 		}
 
+		// Poll for data changes only (not UI — Vite HMR handles that)
 		let knownHash: string | null = null;
 		setInterval(async () => {
 			if (!contract.activeRepo) return;
@@ -93,7 +94,15 @@
 					knownHash = hash;
 				} else if (hash !== knownHash) {
 					knownHash = hash;
-					await contract.refresh();
+					// Soft refresh — don't flash loading spinner
+					const res2 = await fetch(`/api/projects?p=${contract.activeRepo}`);
+					const projects: Project[] = await res2.json();
+					projects.sort(
+						(a, b) =>
+							(a.priority || 99) - (b.priority || 99) ||
+							new Date(a.deadline).getTime() - new Date(b.deadline).getTime(),
+					);
+					contract.projects = projects;
 				}
 			} catch {}
 		}, 2000);

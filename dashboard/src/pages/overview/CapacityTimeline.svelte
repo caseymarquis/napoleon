@@ -170,14 +170,12 @@
 		api.on('select-task', (ev: any) => {
 			const task = ganttTasks.find((t) => t.id === ev.id);
 			if (!task || task.text === '') return;
-			const key = { projectId: task._projectId, taskId: task._taskId };
-			// Toggle if clicking the same task
-			if (selectedTaskKey?.projectId === key.projectId && selectedTaskKey?.taskId === key.taskId) {
-				selectedTaskKey = null;
-			} else {
-				selectedTaskKey = key;
-			}
+			selectedTaskKey = { projectId: task._projectId, taskId: task._taskId };
 		});
+	}
+
+	function closeDetail() {
+		selectedTaskKey = null;
 	}
 </script>
 
@@ -237,6 +235,7 @@
 				task={selectedTask}
 				project={projects.find((p) => p.id === selectedTask._projectId)}
 				{onUpdateTask}
+				onClose={closeDetail}
 			/>
 		{/if}
 
