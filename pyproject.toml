@@ -3,6 +3,7 @@ name = "napoleon"
 version = "0.1.0"
 description = "Personal project intelligence. Strategy, not status."
 requires-python = ">=3.10"
+dependencies = ["aiohttp"]
 authors = [
     { name = "Casey Marquis" }
 ]

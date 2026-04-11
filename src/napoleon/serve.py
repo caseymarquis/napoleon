@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
 """Napoleon dashboard server.
 
-Projects are identified by hash of git remote URL.
-Data lives at ~/.local/share/napoleon/projects/<hash>/data/.
+Single aiohttp server on port 8150 handling HTTP API and WebSocket.
+WebSocket clients at /api/ws get pushed {"type": "data-changed", "hash": "<phash>"}
+when project data files change on disk.
 """
 
+import asyncio
+import collections
 import hashlib
 import json
 import os
 import signal
 import sys
 import time
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import traceback
 from pathlib import Path
+
+from aiohttp import web
 
 PORT = 8150
 START_TIME = time.time()
@@ -22,136 +27,198 @@ XDG_DATA = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"
 NAPOLEON_DIR = XDG_DATA / "napoleon"
 PIDFILE = NAPOLEON_DIR / "server.pid"
 
+CONTENT_TYPES = {
+    '.html': 'text/html',
+    '.js': 'application/javascript',
+    '.css': 'text/css',
+    '.json': 'application/json',
+}
+
+_errors: collections.deque = collections.deque(maxlen=5)
+ws_clients: set[web.WebSocketResponse] = set()
+
+
+def _capture_error():
+    _errors.append({
+        "time": time.strftime("%H:%M:%S"),
+        "error": traceback.format_exc(),
+    })
+
 
 def data_dir(phash):
     return NAPOLEON_DIR / "projects" / phash / "data"
 
 
-class Handler(BaseHTTPRequestHandler):
-    CONTENT_TYPES = {
-        '.html': 'text/html',
-        '.js': 'application/javascript',
-        '.css': 'text/css',
-        '.json': 'application/json',
-    }
+def dir_hash(directory):
+    entries = []
+    if directory.exists():
+        for f in sorted(directory.rglob("*")):
+            if f.is_file():
+                stat = f.stat()
+                entries.append(f"{f.relative_to(directory)}:{stat.st_size}:{stat.st_mtime_ns}")
+    return hashlib.md5("\n".join(entries).encode()).hexdigest()
 
-    def do_GET(self):
-        path, phash = self._parse_request()
 
-        if path == "/api/repos":
-            repos = []
-            projects_root = NAPOLEON_DIR / "projects"
-            if projects_root.exists():
-                for d in sorted(projects_root.iterdir()):
-                    if not d.is_dir():
-                        continue
-                    meta_file = d / "meta.json"
-                    if meta_file.exists():
+# ── HTTP routes ──
+
+async def handle_repos(request):
+    repos = []
+    projects_root = NAPOLEON_DIR / "projects"
+    if projects_root.exists():
+        for d in sorted(projects_root.iterdir()):
+            if not d.is_dir():
+                continue
+            meta_file = d / "meta.json"
+            meta = {}
+            if meta_file.exists():
+                try:
+                    meta = json.loads(meta_file.read_text())
+                except Exception:
+                    pass
+            label = meta.get("name", d.name)
+            repos.append({"hash": d.name, "name": label, "url": meta.get("url", "")})
+    return web.json_response(repos)
+
+
+async def handle_projects(request):
+    phash = request.query.get("p")
+    if not phash:
+        return web.json_response({"error": "Missing ?p=<hash>"}, status=400)
+    pdir = data_dir(phash)
+    if not pdir.exists():
+        return web.json_response([])
+    projects = [json.loads(f.read_text()) for f in sorted(pdir.glob("*.json"))]
+    return web.json_response(projects)
+
+
+async def handle_hash(request):
+    phash = request.query.get("p")
+    if not phash:
+        return web.json_response({"error": "Missing ?p=<hash>"}, status=400)
+    pdir = data_dir(phash)
+    return web.json_response({
+        "hash": dir_hash(pdir),
+        "uiHash": dir_hash(DASHBOARD_DIR),
+        "started": START_TIME,
+    })
+
+
+async def handle_task_update(request):
+    body = await request.json()
+    phash = body.get("phash")
+    project_id = body["project"]
+    task_id = body["task"]
+    updates = body["updates"]
+
+    if not phash:
+        return web.json_response({"error": "Missing phash"}, status=400)
+
+    pdir = data_dir(phash)
+    for f in pdir.glob("*.json"):
+        fdata = json.loads(f.read_text())
+        if fdata["id"] == project_id:
+            for task in fdata["tasks"]:
+                if task["id"] == task_id:
+                    task.update(updates)
+                    f.write_text(json.dumps(fdata, indent=2, ensure_ascii=False) + "\n")
+                    return web.json_response({"ok": True})
+            return web.json_response({"error": "Task not found"}, status=404)
+    return web.json_response({"error": "Project not found"}, status=404)
+
+
+async def handle_errors(request):
+    return web.json_response(list(_errors))
+
+
+# ── WebSocket ──
+
+async def handle_ws(request):
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+    ws_clients.add(ws)
+    try:
+        async for _ in ws:
+            pass  # We don't expect messages from clients
+    finally:
+        ws_clients.discard(ws)
+    return ws
+
+
+async def data_watcher(app):
+    """Poll data dirs and push changes to WebSocket clients."""
+    known_hashes: dict[str, str] = {}
+    while True:
+        await asyncio.sleep(2)
+        projects_root = NAPOLEON_DIR / "projects"
+        if not projects_root.exists():
+            continue
+        try:
+            for d in projects_root.iterdir():
+                if not d.is_dir():
+                    continue
+                pdir = d / "data"
+                if not pdir.exists():
+                    continue
+                phash = d.name
+                h = dir_hash(pdir)
+                if phash not in known_hashes:
+                    known_hashes[phash] = h
+                elif h != known_hashes[phash]:
+                    known_hashes[phash] = h
+                    msg = json.dumps({"type": "data-changed", "hash": phash})
+                    dead = set()
+                    for client in ws_clients:
                         try:
-                            meta = json.loads(meta_file.read_text())
+                            await client.send_str(msg)
                         except Exception:
-                            meta = {}
-                    else:
-                        meta = {}
-                    label = meta.get("name", d.name)
-                    repos.append({"hash": d.name, "name": label, "url": meta.get("url", "")})
-            self._send_json(repos)
-        elif path == "/api/projects":
-            if not phash:
-                self.send_error(400, "Missing ?p=<hash> parameter")
-                return
-            pdir = data_dir(phash)
-            if not pdir.exists():
-                self._send_json([])
-                return
-            projects = [
-                json.loads(f.read_text())
-                for f in sorted(pdir.glob("*.json"))
-            ]
-            self._send_json(projects)
-        elif path == "/api/hash":
-            if not phash:
-                self.send_error(400, "Missing ?p=<hash> parameter")
-                return
-            pdir = data_dir(phash)
-            self._send_json({
-                "hash": self._dir_hash(pdir),
-                "uiHash": self._dir_hash(DASHBOARD_DIR),
-                "started": START_TIME,
-            })
-        else:
-            file_path = path.lstrip("/") or "index.html"
-            full_path = DASHBOARD_DIR / file_path
-            if full_path.is_file() and (DASHBOARD_DIR in full_path.resolve().parents or full_path.resolve() == DASHBOARD_DIR):
-                ct = self.CONTENT_TYPES.get(full_path.suffix, 'application/octet-stream')
-                self._send_file(full_path, ct)
-            else:
-                self.send_error(404)
+                            dead.add(client)
+                    for d in dead:
+                        ws_clients.discard(d)
+        except Exception:
+            _capture_error()
 
-    def do_POST(self):
-        if self.path == "/api/task/update":
-            body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
-            phash = body.get('phash')
-            project_id = body['project']
-            task_id = body['task']
-            updates = body['updates']
 
-            if not phash:
-                self.send_error(400, "Missing phash")
-                return
+async def start_watcher(app):
+    app["watcher"] = asyncio.create_task(data_watcher(app))
 
-            pdir = data_dir(phash)
-            for f in pdir.glob("*.json"):
-                fdata = json.loads(f.read_text())
-                if fdata['id'] == project_id:
-                    for task in fdata['tasks']:
-                        if task['id'] == task_id:
-                            task.update(updates)
-                            f.write_text(json.dumps(fdata, indent=2, ensure_ascii=False) + "\n")
-                            self._send_json({"ok": True})
-                            return
-                    self.send_error(404, "Task not found")
-                    return
-            self.send_error(404, "Project not found")
-        else:
-            self.send_error(404)
 
-    def _parse_request(self):
-        from urllib.parse import urlparse, parse_qs
-        parsed = urlparse(self.path)
-        qs = parse_qs(parsed.query)
-        phash = qs.get("p", [None])[0]
-        return parsed.path, phash
-
-    @staticmethod
-    def _dir_hash(directory):
-        entries = []
-        if directory.exists():
-            for f in sorted(directory.rglob("*")):
-                if f.is_file():
-                    stat = f.stat()
-                    entries.append(f"{f.relative_to(directory)}:{stat.st_size}:{stat.st_mtime_ns}")
-        return hashlib.md5("\n".join(entries).encode()).hexdigest()
-
-    def _send_json(self, data):
-        self._send_bytes(json.dumps(data).encode(), "application/json")
-
-    def _send_file(self, path, content_type):
-        if not path.exists():
-            self.send_error(404)
-            return
-        self._send_bytes(path.read_bytes(), content_type)
-
-    def _send_bytes(self, body, content_type):
-        self.send_response(200)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", len(body))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def log_message(self, fmt, *args):
+async def stop_watcher(app):
+    app["watcher"].cancel()
+    try:
+        await app["watcher"]
+    except asyncio.CancelledError:
         pass
 
+
+# ── Static files (fallback) ──
+
+async def handle_static(request):
+    file_path = request.path.lstrip("/") or "index.html"
+    full_path = DASHBOARD_DIR / file_path
+    if full_path.is_file() and (DASHBOARD_DIR in full_path.resolve().parents or full_path.resolve() == DASHBOARD_DIR):
+        ct = CONTENT_TYPES.get(full_path.suffix, "application/octet-stream")
+        return web.Response(body=full_path.read_bytes(), content_type=ct)
+    raise web.HTTPNotFound()
+
+
+# ── App factory ──
+
+def create_app():
+    app = web.Application()
+    app.router.add_get("/api/repos", handle_repos)
+    app.router.add_get("/api/projects", handle_projects)
+    app.router.add_get("/api/hash", handle_hash)
+    app.router.add_post("/api/task/update", handle_task_update)
+    app.router.add_get("/api/errors", handle_errors)
+    app.router.add_get("/api/ws", handle_ws)
+    # Static fallback (must be last)
+    app.router.add_get("/{path:.*}", handle_static)
+    app.on_startup.append(start_watcher)
+    app.on_cleanup.append(stop_watcher)
+    return app
+
+
+# ── Server lifecycle ──
 
 def is_running():
     if PIDFILE.exists():
@@ -200,11 +267,9 @@ def run(foreground=False):
         PIDFILE.write_text(str(os.getpid()))
         print(f"Dashboard: http://localhost:{PORT}")
 
-    server = HTTPServer(("localhost", PORT), Handler)
-    try:
-        server.serve_forever()
-    finally:
-        PIDFILE.unlink(missing_ok=True)
+    app = create_app()
+    web.run_app(app, host="localhost", port=PORT, print=None)
+    PIDFILE.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

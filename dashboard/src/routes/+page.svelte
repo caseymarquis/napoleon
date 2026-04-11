@@ -11,6 +11,8 @@
 		day: 'numeric',
 	});
 
+	let wsStatus = $state<'connecting' | 'connected' | 'disconnected'>('connecting');
+
 	let contract: OverviewPageContract = $state({
 		projects: [],
 		repos: [],
@@ -83,29 +85,44 @@
 			contract.loading = false;
 		}
 
-		// Poll for data changes only (not UI — Vite HMR handles that)
-		let knownHash: string | null = null;
-		setInterval(async () => {
-			if (!contract.activeRepo) return;
-			try {
-				const res = await fetch(`/api/hash?p=${contract.activeRepo}`);
-				const { hash } = await res.json();
-				if (knownHash === null) {
-					knownHash = hash;
-				} else if (hash !== knownHash) {
-					knownHash = hash;
-					// Soft refresh — don't flash loading spinner
-					const res2 = await fetch(`/api/projects?p=${contract.activeRepo}`);
-					const projects: Project[] = await res2.json();
-					projects.sort(
-						(a, b) =>
-							(a.priority || 99) - (b.priority || 99) ||
-							new Date(a.deadline).getTime() - new Date(b.deadline).getTime(),
-					);
-					contract.projects = projects;
+		// WebSocket for live data updates (server pushes when files change)
+		function connectWs() {
+			wsStatus = 'connecting';
+			// Vite dev server can't proxy WebSockets reliably — connect directly to API server
+			const wsUrl = location.port === '5173'
+				? `ws://${location.hostname}:8150/api/ws`
+				: `ws://${location.host}/api/ws`;
+			const ws = new WebSocket(wsUrl);
+			ws.onopen = () => {
+				wsStatus = 'connected';
+				console.log('[ws] connected');
+			};
+			ws.onmessage = async (event) => {
+				const msg = JSON.parse(event.data);
+				console.log('[ws] message:', msg);
+				if (msg.type === 'data-changed' && msg.hash === contract.activeRepo) {
+					try {
+						const res = await fetch(`/api/projects?p=${contract.activeRepo}`);
+						const projects: Project[] = await res.json();
+						projects.sort(
+							(a, b) =>
+								(a.priority || 99) - (b.priority || 99) ||
+								new Date(a.deadline).getTime() - new Date(b.deadline).getTime(),
+						);
+						contract.projects = projects;
+					} catch {}
 				}
-			} catch {}
-		}, 2000);
+			};
+			ws.onclose = () => {
+				wsStatus = 'disconnected';
+				console.log('[ws] disconnected, reconnecting in 3s');
+				setTimeout(connectWs, 3000);
+			};
+			ws.onerror = (e) => {
+				console.log('[ws] error:', e);
+			};
+		}
+		connectWs();
 	}
 
 	init();
@@ -114,7 +131,16 @@
 <div class="mx-auto max-w-[1400px] px-10 py-8">
 	<div class="mb-8 flex items-end justify-between border-b border-border pb-4">
 		<div>
-			<h1 class="text-2xl font-bold tracking-tight">Project Dashboard</h1>
+			<h1 class="text-2xl font-bold tracking-tight">
+				Project Dashboard
+				<span
+					class="ml-2 inline-block h-2 w-2 rounded-full align-middle"
+					class:bg-green-500={wsStatus === 'connected'}
+					class:bg-yellow-500={wsStatus === 'connecting'}
+					class:bg-red-500={wsStatus === 'disconnected'}
+					title="WebSocket: {wsStatus}"
+				></span>
+			</h1>
 			<div class="text-sm text-muted-foreground">{dateStr}</div>
 		</div>
 		{#if contract.repos.length > 0}
