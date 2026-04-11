@@ -166,8 +166,9 @@ def cmd_projects(phash):
     for i, (f, data) in enumerate(projects):
         total = len(data["tasks"])
         done = sum(1 for t in data["tasks"] if t["status"] == "completed")
-        deadline = data.get("deadline", "?")
-        print(f"  {i}  {data['title']}  ({done}/{total} done, deadline {deadline})")
+        deadline = data.get("deadline")
+        dl_str = f", deadline {deadline}" if deadline else ""
+        print(f"  {i}  {data['title']}  ({done}/{total} done{dl_str})")
 
 
 def cmd_project_show(phash, project_idx):
@@ -326,7 +327,7 @@ def cmd_project_new(phash, project_id, title, kwargs):
         "title": title,
         "description": kwargs.get("description", ""),
         "committedTo": kwargs.get("committed_to", ""),
-        "deadline": kwargs.get("deadline", "2099-12-31"),
+        "deadline": kwargs.get("deadline"),
         "minimumDelivery": kwargs.get("min_delivery"),
         "priority": int(kwargs.get("priority", 99)),
         "status": "planning",
