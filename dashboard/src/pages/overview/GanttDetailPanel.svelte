@@ -74,6 +74,24 @@
 
 			<div class="flex items-center gap-4">
 				<label class="flex items-center gap-1.5">
+					<span class="text-xs text-muted-foreground">Status</span>
+					<Select.Root
+						type="single"
+						value={task._status || 'not_started'}
+						onValueChange={(v) => update('status', v)}
+					>
+						<Select.Trigger class="h-7 w-28 text-xs">
+							{(task._status || 'not_started').replace('_', ' ')}
+						</Select.Trigger>
+						<Select.Content>
+							<Select.Item value="not_started">not started</Select.Item>
+							<Select.Item value="in_progress">in progress</Select.Item>
+							<Select.Item value="completed">completed</Select.Item>
+						</Select.Content>
+					</Select.Root>
+				</label>
+
+				<label class="flex items-center gap-1.5">
 					<span class="text-xs text-muted-foreground">Risk</span>
 					<Select.Root
 						type="single"

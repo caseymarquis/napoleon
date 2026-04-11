@@ -85,6 +85,7 @@
 					_est90: task.est90,
 					_description: task.description,
 					_atomic: task.atomic,
+					_status: task.status,
 				});
 
 				dayOffset += dur;

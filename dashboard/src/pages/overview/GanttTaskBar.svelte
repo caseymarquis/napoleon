@@ -1,6 +1,13 @@
 <script>
 	let { data } = $props();
 
+	let statusIcon = $derived.by(() => {
+		if (data.type === 'summary') return '';
+		if (data._status === 'in_progress') return '▶';
+		if (data._status === 'completed') return '✓';
+		return '';
+	});
+
 	let warnings = $derived.by(() => {
 		if (data.type === 'summary') return [];
 		const w = [];
@@ -13,6 +20,7 @@
 	let tooltip = $derived.by(() => {
 		if (data.type === 'summary') return data.text;
 		const parts = [data.text];
+		if (data._status) parts.push(`Status: ${data._status.replace('_', ' ')}`);
 		if (data._description) parts.push(data._description);
 		if (data._est50 != null) parts.push(`Est: ${data._est50}d / ${data._est90 ?? '?'}d`);
 		if (data._risk) parts.push(`Risk: ${data._risk}`);
@@ -25,6 +33,7 @@
 <div class="bar-wrapper" title={tooltip}>
 	{#if data.type !== 'summary'}
 		<div class="task-label">
+			{#if statusIcon}<span class="status-icon">{statusIcon}</span>{/if}
 			{#if warnings.length}<span class="warnings">{warnings.join('')}</span>{/if}
 			{data.text || ''}
 		</div>
@@ -45,6 +54,11 @@
 		font-size: 11px;
 		white-space: nowrap;
 		color: var(--wx-gantt-bar-color, #ccc);
+	}
+	.status-icon {
+		margin-right: 3px;
+		font-size: 10px;
+		color: #58a6ff;
 	}
 	.warnings {
 		margin-right: 4px;
