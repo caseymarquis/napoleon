@@ -108,6 +108,27 @@
     margin-bottom: 0.6rem;
   }
 
+  .header-right {
+    display: flex;
+    align-items: flex-end;
+    gap: 1.5rem;
+  }
+
+  .repo-select {
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0.35rem 0.6rem;
+    font-size: 0.8rem;
+    font-family: inherit;
+    cursor: pointer;
+    margin-bottom: 0.35rem;
+  }
+
+  .repo-select:hover { border-color: var(--accent); }
+  .repo-select:focus { outline: none; border-color: var(--accent); }
+
   .tab-bar {
     display: flex;
     gap: 2px;
@@ -538,9 +559,12 @@
     <h1>Project Dashboard</h1>
     <div class="header-date" id="header-date"></div>
   </div>
-  <div class="tab-bar">
-    <button class="tab-btn active" data-tab="overview">Overview</button>
-    <button class="tab-btn" data-tab="planning">Planning</button>
+  <div class="header-right">
+    <select class="repo-select" id="repo-select"></select>
+    <div class="tab-bar">
+      <button class="tab-btn active" data-tab="overview">Overview</button>
+      <button class="tab-btn" data-tab="planning">Planning</button>
+    </div>
   </div>
 </div>
 
@@ -549,7 +573,7 @@
 
 <script>
 /* ── Shared data layer ── */
-const PROJECT_HASH = location.hash.slice(1);
+let PROJECT_HASH = location.hash.slice(1);
 function apiUrl(endpoint) {
   return endpoint + (PROJECT_HASH ? (endpoint.includes('?') ? '&' : '?') + 'p=' + PROJECT_HASH : '');
 }
@@ -748,7 +772,38 @@ async function pollForChanges() {
   } catch (e) {}
 }
 
+async function loadRepos() {
+  try {
+    const res = await fetch('/api/repos');
+    return await res.json();
+  } catch { return []; }
+}
+
 async function init() {
+  // Populate repo dropdown
+  const repos = await loadRepos();
+  const select = document.getElementById('repo-select');
+  repos.forEach(r => {
+    const opt = document.createElement('option');
+    opt.value = r.hash;
+    opt.textContent = r.name || r.hash;
+    select.appendChild(opt);
+  });
+
+  // Select current hash, or default to first available
+  if (!PROJECT_HASH && repos.length > 0) {
+    PROJECT_HASH = repos[0].hash;
+    location.hash = PROJECT_HASH;
+  }
+  select.value = PROJECT_HASH;
+
+  select.addEventListener('change', () => {
+    PROJECT_HASH = select.value;
+    location.hash = PROJECT_HASH;
+    knownHash = null;
+    refresh();
+  });
+
   await refresh();
   setInterval(pollForChanges, 2000);
 }

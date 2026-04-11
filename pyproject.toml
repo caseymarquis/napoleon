@@ -9,6 +9,7 @@ authors = [
 
 [project.scripts]
 napoleon = "napoleon.__main__:main"
+nb = "napoleon.__main__:main"
 
 [build-system]
 requires = ["hatchling"]

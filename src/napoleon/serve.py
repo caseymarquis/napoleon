@@ -38,7 +38,25 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path, phash = self._parse_request()
 
-        if path == "/api/projects":
+        if path == "/api/repos":
+            repos = []
+            projects_root = NAPOLEON_DIR / "projects"
+            if projects_root.exists():
+                for d in sorted(projects_root.iterdir()):
+                    if not d.is_dir():
+                        continue
+                    meta_file = d / "meta.json"
+                    if meta_file.exists():
+                        try:
+                            meta = json.loads(meta_file.read_text())
+                        except Exception:
+                            meta = {}
+                    else:
+                        meta = {}
+                    label = meta.get("name", d.name)
+                    repos.append({"hash": d.name, "name": label, "url": meta.get("url", "")})
+            self._send_json(repos)
+        elif path == "/api/projects":
             if not phash:
                 self.send_error(400, "Missing ?p=<hash> parameter")
                 return
