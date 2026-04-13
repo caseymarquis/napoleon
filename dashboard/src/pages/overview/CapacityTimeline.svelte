@@ -5,16 +5,15 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import { Gantt, WillowDark } from '@svar-ui/svelte-gantt';
 	import GanttTaskBar from './GanttTaskBar.svelte';
-	import GanttDetailPanel from './GanttDetailPanel.svelte';
+
+	export type TaskKey = { projectId: string; taskId: string } | null;
 
 	let {
 		projects,
-		onSelectProject,
-		onUpdateTask,
+		selectedTaskKey = $bindable(null),
 	}: {
 		projects: Project[];
-		onSelectProject?: (projectId: string) => void;
-		onUpdateTask?: (projectId: string, taskId: string, updates: Record<string, any>) => void;
+		selectedTaskKey?: TaskKey;
 	} = $props();
 
 	let timeline = $derived(computeSequentialTimeline(projects));
@@ -185,16 +184,31 @@
 		return d;
 	});
 
-	let selectedTaskKey = $state<{ projectId: string; taskId: string } | null>(null);
+	// Track task keys we've seen (non-reactive). When a new one appears
+	// (created via CLI or UI), auto-focus it so it's editable immediately.
+	let seenTaskKeys: Set<string> | null = null;
 
-	// Re-derive selectedTask from ganttTasks whenever data refreshes
-	let selectedTask = $derived.by(() => {
-		if (!selectedTaskKey) return null;
-		return ganttTasks.find(
-			(t) => t._projectId === selectedTaskKey!.projectId && t._taskId === selectedTaskKey!.taskId,
-		) ?? ganttTasks.find(
-			(t) => t._projectId === selectedTaskKey!.projectId && t.type === 'summary',
-		) ?? null;
+	$effect(() => {
+		const currentKeys = new Set<string>();
+		const newTasks: { projectId: string; taskId: string }[] = [];
+		for (const t of ganttTasks) {
+			if (t.type !== 'task' || t._isBuffer || !t._taskId) continue;
+			const key = `${t._projectId}:${t._taskId}`;
+			currentKeys.add(key);
+			if (seenTaskKeys && !seenTaskKeys.has(key)) {
+				newTasks.push({ projectId: t._projectId, taskId: t._taskId });
+			}
+		}
+		// First render: just record, don't auto-focus
+		if (seenTaskKeys === null) {
+			seenTaskKeys = currentKeys;
+			return;
+		}
+		// New tasks appeared — focus the last one
+		if (newTasks.length > 0) {
+			selectedTaskKey = newTasks[newTasks.length - 1];
+		}
+		seenTaskKeys = currentKeys;
 	});
 
 	function ganttInit(api: any) {
@@ -203,10 +217,6 @@
 			if (!task || task.text === '') return;
 			selectedTaskKey = { projectId: task._projectId, taskId: task._taskId };
 		});
-	}
-
-	function closeDetail() {
-		selectedTaskKey = null;
 	}
 </script>
 
@@ -270,16 +280,6 @@
 					/>
 				</WillowDark>
 			</div>
-		{/if}
-
-		<!-- Detail panel -->
-		{#if selectedTask}
-			<GanttDetailPanel
-				task={selectedTask}
-				project={projects.find((p) => p.id === selectedTask._projectId)}
-				{onUpdateTask}
-				onClose={closeDetail}
-			/>
 		{/if}
 
 		<!-- Legend -->

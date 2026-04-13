@@ -34,7 +34,7 @@
 	}
 </script>
 
-<div class="mt-3 rounded-md border border-border bg-card p-4 relative">
+<div class="rounded-md border border-border bg-card p-4 relative">
 	{#if onClose}
 		<Button variant="ghost" size="sm" class="absolute top-2 right-2 h-6 w-6 p-0 text-muted-foreground" onclick={onClose}>✕</Button>
 	{/if}
