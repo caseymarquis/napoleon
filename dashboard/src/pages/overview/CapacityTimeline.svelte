@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { Project } from './OverviewPageContract';
-	import { computeSequentialTimeline, colorFor, formatDate, DEFAULT_EST } from './utils';
+	import { computeSequentialTimeline, computeProjectBuffer, colorFor, formatDate, DEFAULT_EST } from './utils';
 	import * as Card from '$lib/components/ui/card';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Gantt, WillowDark } from '@svar-ui/svelte-gantt';
@@ -20,12 +20,18 @@
 	let timeline = $derived(computeSequentialTimeline(projects));
 	let deadlineDays = $derived(timeline.deadlines.map((d) => d.day));
 	let latestDeadline = $derived(deadlineDays.length > 0 ? Math.max(...deadlineDays) : 0);
+	let totalBuffer = $derived(timeline.buffers.reduce((sum, b) => sum + b.buffer, 0));
+	// Compare work + buffer against deadline
 	let overBy = $derived(
-		latestDeadline > 0 ? Math.round((timeline.totalWork - latestDeadline) * 10) / 10 : 0,
+		latestDeadline > 0
+			? Math.round((timeline.totalWithBuffers - latestDeadline) * 10) / 10
+			: 0,
 	);
-	let capacityStatus = $derived(overBy > 5 ? 'over' : overBy > 0 ? 'tight' : 'ok');
+	let capacityStatus = $derived<'over' | 'tight' | 'ok'>(
+		overBy > 5 ? 'over' : overBy > 0 ? 'tight' : 'ok',
+	);
 
-	const statusStyle = {
+	const statusStyle: Record<'over' | 'tight' | 'ok', string> = {
 		over: 'text-destructive-foreground',
 		tight: 'text-chart-4',
 		ok: 'text-chart-2',
@@ -91,7 +97,31 @@
 				dayOffset += dur;
 			}
 
-			// Project summary (parent)
+			// Buffer row (CCPM: sqrt of sum of squared differences between est90 and est50)
+			const bufferInfo = timeline.buffers.find((b) => b.projectId === project.id);
+			if (bufferInfo && bufferInfo.buffer > 0) {
+				const bufStart = new Date(today);
+				bufStart.setDate(bufStart.getDate() + Math.round(dayOffset));
+				const bufEnd = new Date(today);
+				bufEnd.setDate(bufEnd.getDate() + Math.round(dayOffset + bufferInfo.buffer));
+
+				tasks.push({
+					id: stableId(`buffer:${project.id}`),
+					text: `Buffer (${bufferInfo.buffer}d)`,
+					start: bufStart,
+					end: bufEnd,
+					duration: Math.max(Math.round(bufferInfo.buffer), 1),
+					progress: 0,
+					type: 'task',
+					parent: projectGanttId,
+					_projectId: project.id,
+					_isBuffer: true,
+				});
+
+				dayOffset += bufferInfo.buffer;
+			}
+
+			// Project summary (parent) — spans tasks + buffer
 			const projectEnd = new Date(today);
 			projectEnd.setDate(projectEnd.getDate() + Math.round(dayOffset));
 			const projectStartDate = new Date(today);
@@ -190,10 +220,22 @@
 		<!-- Stats -->
 		<div class="mb-5 flex gap-10">
 			<div class="flex flex-col">
-				<span class="text-2xl font-bold leading-tight {statusStyle[capacityStatus]}">
+				<span class="text-2xl font-bold leading-tight">
 					{timeline.totalWork}d
 				</span>
-				<span class="mt-0.5 text-xs text-muted-foreground">total work (est.)</span>
+				<span class="mt-0.5 text-xs text-muted-foreground">work (est50)</span>
+			</div>
+			<div class="flex flex-col">
+				<span class="text-2xl font-bold leading-tight text-muted-foreground">
+					+{totalBuffer}d
+				</span>
+				<span class="mt-0.5 text-xs text-muted-foreground">buffer (CCPM)</span>
+			</div>
+			<div class="flex flex-col">
+				<span class="text-2xl font-bold leading-tight {statusStyle[capacityStatus]}">
+					{timeline.totalWithBuffers}d
+				</span>
+				<span class="mt-0.5 text-xs text-muted-foreground">total with buffer</span>
 			</div>
 			<div class="flex flex-col">
 				<span class="text-2xl font-bold leading-tight">{latestDeadline}d</span>

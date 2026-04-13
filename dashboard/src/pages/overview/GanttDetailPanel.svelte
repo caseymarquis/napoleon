@@ -113,7 +113,7 @@
 					<span class="text-xs text-muted-foreground">Atomic</span>
 					<Checkbox
 						checked={task._atomic || false}
-						onCheckedChange={(v) => update('atomic', v)}
+						onCheckedChange={(v: boolean) => update('atomic', v)}
 					/>
 				</label>
 			</div>

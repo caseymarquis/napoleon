@@ -55,7 +55,6 @@
 		"vitest": "^4.1.4"
 	},
 	"dependencies": {
-		"@svar-ui/svelte-gantt": "^2.6.1",
-		"wx-svelte-gantt": "^2.6.1"
+		"@svar-ui/svelte-gantt": "^2.6.1"
 	}
 }

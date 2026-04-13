@@ -135,13 +135,40 @@ export interface TimelineDeadline {
 	date: string;
 }
 
+/**
+ * CCPM buffer calculation.
+ * Buffer = sqrt(sum((est90 - est50)² for each task))
+ * This gives a statistically grounded safety margin without padding individual tasks.
+ */
+export function computeProjectBuffer(tasks: Task[]): number {
+	const remaining = tasks.filter((t) => t.status !== 'completed');
+	const sumOfSquares = remaining.reduce((sum, t) => {
+		const est50 = t.est50 || DEFAULT_EST;
+		const est90 = t.est90 || est50 * 1.5; // fallback: 50% more than est50
+		const diff = est90 - est50;
+		return sum + diff * diff;
+	}, 0);
+	return Math.round(Math.sqrt(sumOfSquares) * 10) / 10;
+}
+
+export interface ProjectBuffer {
+	projectId: string;
+	projectTitle: string;
+	colorIndex: number;
+	est50Total: number;
+	buffer: number;
+	/** Start of buffer segment (day offset) */
+	bufferStart: number;
+}
+
 export function computeSequentialTimeline(projects: Project[]): {
 	segments: TimelineSegment[];
 	totalWork: number;
+	totalWithBuffers: number;
+	buffers: ProjectBuffer[];
 	deadlines: TimelineDeadline[];
 	scaleMax: number;
 } {
-	// Sort by deadline for sequencing, but preserve original index for colors
 	const withIndex = projects.map((p, i) => ({ project: p, colorIndex: i }));
 	// Sequence work by priority, then deadline as tiebreaker
 	const sorted = [...withIndex].sort((a, b) => {
@@ -154,10 +181,14 @@ export function computeSequentialTimeline(projects: Project[]): {
 
 	let dayOffset = 0;
 	const segments: TimelineSegment[] = [];
+	const buffers: ProjectBuffer[] = [];
 
 	for (const { project, colorIndex } of sorted) {
-		for (const task of project.tasks) {
-			if (task.status === 'completed') continue;
+		const remaining = project.tasks.filter((t) => t.status !== 'completed');
+		if (remaining.length === 0) continue;
+
+		const projectStart = dayOffset;
+		for (const task of remaining) {
 			const dur = task.est50 || DEFAULT_EST;
 			segments.push({
 				projectTitle: project.title,
@@ -169,32 +200,36 @@ export function computeSequentialTimeline(projects: Project[]): {
 			});
 			dayOffset += dur;
 		}
+
+		const buffer = computeProjectBuffer(project.tasks);
+		buffers.push({
+			projectId: project.id,
+			projectTitle: project.title,
+			colorIndex,
+			est50Total: dayOffset - projectStart,
+			buffer,
+			bufferStart: dayOffset,
+		});
+		dayOffset += buffer;
 	}
+
+	const totalWork = segments.reduce((sum, s) => sum + s.duration, 0);
 
 	const deadlines = projects
 		.filter((p) => p.deadline)
-		.map((p, _, arr) => ({
+		.map((p) => ({
 			title: p.title.split('\u2014')[0].trim(),
 			day: daysUntil(p.deadline),
 			date: p.deadline,
 			colorIndex: projects.indexOf(p),
 		}));
 
-	// Scale hint: last real deadline + remaining work on that project
+	// Scale: include buffers
 	let scaleMax = dayOffset;
 	if (deadlines.length > 0) {
 		const lastDeadline = Math.max(...deadlines.map((d) => d.day));
-		const lastDlProject = [...projects]
-			.filter((p) => p.deadline)
-			.sort((a, b) => new Date(a.deadline!).getTime() - new Date(b.deadline!).getTime())
-			.at(-1);
-		const lastProjectWork = lastDlProject
-			? lastDlProject.tasks
-					.filter((t) => t.status !== 'completed')
-					.reduce((sum, t) => sum + (t.est50 || DEFAULT_EST), 0)
-			: 0;
-		scaleMax = lastDeadline + lastProjectWork;
+		scaleMax = Math.max(scaleMax, lastDeadline + 2);
 	}
 
-	return { segments, totalWork: dayOffset, deadlines, scaleMax };
+	return { segments, totalWork, totalWithBuffers: dayOffset, buffers, deadlines, scaleMax };
 }

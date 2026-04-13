@@ -31,7 +31,9 @@
 </script>
 
 <div class="bar-wrapper" title={tooltip}>
-	{#if data.type !== 'summary'}
+	{#if data._isBuffer}
+		<div class="task-label buffer-label">🛡️ {data.text || ''}</div>
+	{:else if data.type !== 'summary'}
 		<div class="task-label">
 			{#if statusIcon}<span class="status-icon">{statusIcon}</span>{/if}
 			{#if warnings.length}<span class="warnings">{warnings.join('')}</span>{/if}
@@ -64,5 +66,9 @@
 		margin-right: 4px;
 		font-size: 16px;
 		vertical-align: middle;
+	}
+	.buffer-label {
+		opacity: 0.6;
+		font-style: italic;
 	}
 </style>
