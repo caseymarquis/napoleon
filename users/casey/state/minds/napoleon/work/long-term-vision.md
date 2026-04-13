@@ -8,12 +8,27 @@ Casey manages multiple complex customer-facing projects with tight, overlapping 
 
 A personal project intelligence layer — a dashboard and CLI that makes planning, tracking, and revising work feel effortless rather than burdensome. Installed as a standard Python CLI via `uv`, works in any git repo, accessible from any terminal or Claude Code session.
 
+### Who It's For
+
+Napoleon is a **general AI tool**. Any Claude Code instance or AI mind should be able to pick it up and use it effectively — not just the mind that built it. `napoleon help` is the onboarding. The output is the documentation. A fresh session in an unfamiliar repo should be able to run `napoleon tasks` and immediately understand project state.
+
+### Two Modes of Use
+
+**Planning mode** — deliberate and collaborative. Human and AI sit down together to break down work, estimate, reorder, identify risks and unknowns. This is where the dashboard and detailed views earn their keep. Planning is a conversation, not form-filling.
+
+**Tracking mode** — ambient and automatic. Happens as a side effect of normal work, not as a separate activity. The human never says "update task X status to Y." They say "email sent!" and the AI handles the bookkeeping. Or the AI notices growing complexity and suggests splitting a task. The CLI must support this: quick, quiet calls mid-conversation that don't break flow.
+
+Examples of ambient tracking:
+- Human: "Email sent!" → AI marks the task done, surfaces what's next
+- Human: "This is more complex than we thought." → AI suggests splitting the task based on what's done vs what's new
+- AI notices a task is taking longer than estimated → proactively suggests re-estimating or breaking it down
+
 ### Core Principles
 
 - **The plan is a living document.** It's always wrong somewhere. The system must make revision frictionless, not something you schedule.
 - **The unit of motivation is the personal view, not the ticket.** Jira is for management reporting. This is for the person doing the work.
 - **AI is the interface.** You don't file tickets — you describe what you learned, and the system updates. The conversation *is* the project management.
-- **Navigation, not execution, is the bottleneck.** Casey can move fast once pointed in a direction. The system answers "what do I do next?"
+- **Navigation, not execution, is the bottleneck.** The human can move fast once pointed in a direction. The system answers "what do I do next?"
 - **No configuration ceremony.** Project detection from git remote URL. Data isolation automatic. `cd` into a repo and go.
 
 ### What Exists Today

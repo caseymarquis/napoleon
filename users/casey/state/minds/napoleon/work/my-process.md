@@ -10,83 +10,124 @@ Napoleon lives at `/home/casey/code/napoleon/`. It's a haiv project — orphan b
 ├── src/haiv_project/commands/          # haiv commands (e.g. napoleon_sync)
 ├── users/casey/state/minds/napoleon/   # my mind files
 └── worktrees/main/                     # main branch = the actual code
-    ├── .gitignore
-    ├── pyproject.toml                  # Python package (editable install)
-    ├── src/napoleon/                   # CLI + server + dashboard
+    ├── pyproject.toml                  # Python package (aiohttp dep)
+    ├── src/napoleon/
     │   ├── __main__.py                 # CLI entry point + all commands
-    │   ├── serve.py                    # Dashboard server (daemonizes)
-    │   └── dashboard/                  # HTML/JS frontend
-    │       ├── index.html              # Tab shell, shared CSS, data layer
-    │       ├── overview.js             # Capacity, next-up, readiness
-    │       └── planning.js             # Single-project focus, inline editing
-    ├── .claude-plugin/marketplace.json
-    └── plugins/napoleon/               # Thin Claude Code plugin shell
-        ├── .claude-plugin/plugin.json
-        └── commands/napoleon.md
+    │   ├── serve.py                    # aiohttp server (HTTP + WebSocket)
+    │   └── dashboard/                  # (empty, old vanilla dashboard removed)
+    ├── dashboard/                      # SvelteKit frontend (separate project)
+    │   ├── src/
+    │   │   ├── Architecture.md         # Contract UI architecture doc
+    │   │   ├── routes/+page.svelte     # Host — wires contract to API
+    │   │   ├── pages/overview/         # OverviewPage, components, contract
+    │   │   └── lib/components/ui/      # shadcn-svelte components
+    │   ├── package.json
+    │   └── vite.config.ts
+    ├── tests/test_serve.py             # Python server tests
+    └── .claude-plugin/marketplace.json
 
 GitHub: https://github.com/caseymarquis/napoleon
 ```
 
 ## How it works
 
-**Two deliverables, one repo:**
-1. **Python package** — `uv tool install --editable .` puts `napoleon` on PATH. The real tool.
-2. **Claude Code plugin** — thin shell for `/napoleon` slash command. Installs the package.
+**Two deliverables:**
+1. **Python CLI + server** — `uv tool install --editable .` installs `napoleon` and `nb` on PATH
+2. **Svelte dashboard** — SPA built with SvelteKit, served by the Python server or via Vite dev
 
 **Project detection:** Hash of `git remote get-url origin`. No registration, no config. `cd` into a repo and go.
 
-**Data isolation:** `~/.local/share/napoleon/projects/<hash>/data/` — one JSON file per project per repo.
+**Data isolation:** `~/.local/share/napoleon/projects/<hash>/` — one dir per repo, containing `meta.json` and `data/*.json`.
+
+**Live updates:** WebSocket at `/api/ws`. Server polls data dirs every 2s, pushes `{type: "data-changed", hash: "..."}` to all clients on change. No browser polling.
 
 ## Development Workflow
 
-**Editable install** — changes to source take effect immediately:
+### Python (CLI + server)
+
 ```bash
 cd /home/casey/code/napoleon/worktrees/main
 uv tool install --editable .
+napoleon serve --stop; napoleon serve   # restart server after changes
 ```
 
-**Test:**
+**Type-check:** There's a `ty` (uv's companion) installed but it can't resolve websockets stubs perfectly. For now, write tests in `tests/test_serve.py` that use the tool's Python (`~/.local/share/uv/tools/napoleon/bin/python3`).
+
+**Test:** `~/.local/share/uv/tools/napoleon/bin/python3 tests/test_serve.py`
+
+### Svelte dashboard
+
 ```bash
-napoleon help
-napoleon projects
-napoleon open
+cd /home/casey/code/napoleon/worktrees/main/dashboard
+npm run dev -- --port 5173     # Vite dev server with HMR
+npm run check                   # Type-check (fast — prefer over build)
+npm run build                   # Full production build
 ```
 
-**Push:**
-```bash
-cd /home/casey/code/napoleon/worktrees/main && git add -A && git commit -m "description" && git push origin main
-```
+**CRITICAL:** Use `npm run check` to verify changes, NOT `npm run build`. It's much faster and catches type errors that build might miss.
 
-**Plugin sync** (only needed for plugin command changes):
-```bash
-hv napoleon_sync
-/reload-plugins
-```
+**Dev architecture:** Vite runs on :5173, API on :8150. Vite proxies `/api/*` to :8150, but can't proxy WebSockets reliably — frontend connects directly to `ws://localhost:8150/api/ws` in dev mode.
 
 ## CLI Reference
 
+Hierarchical command structure — projects and tasks referenced by numeric index.
+
 ```
-napoleon open                       Start server + open dashboard in browser
-napoleon serve [--stop|--fg]        Manage the dashboard server
-napoleon projects                   List projects in current repo
-napoleon tasks <project>            List tasks
-napoleon add <project> <title>      Add a task [--id --description --risk --est50 --est90 --atomic --at]
-napoleon done <project> <task>      Mark complete
-napoleon update <project> <task>    Update fields [--est50 --est90 --risk --status --atomic --description]
-napoleon rm <project> <task>        Remove a task
-napoleon new <id> <title>           Create a project [--deadline --priority --committed-to --description]
-napoleon unknowns <project> list|add|remove [text|index]
-napoleon constraints <project> list|add|remove [text|index]
-napoleon help                       Show full help
-napoleon --version                  Show version
+nb projects                         List all projects (numbered)
+nb projects <N>                     Briefing for project N
+nb projects new <id> <title>        Create a project
+    [--deadline YYYY-MM-DD] [--priority N] [--committed-to WHO] [--description TEXT]
+
+nb projects <N> tasks               List tasks for project N
+nb projects <N> tasks add <title>   Add a task
+    [--description TEXT] [--risk low|medium|high]
+    [--est50 N] [--est90 N] [--atomic] [--at INDEX]
+nb projects <N> tasks <T> done      Mark task T complete
+nb projects <N> tasks <T> update    Update task T fields
+nb projects <N> tasks <T> rm        Remove task T
+
+nb projects <N> unknowns            List/add/rm unknowns
+nb projects <N> constraints         List/add/rm constraints
+
+nb repos                            List all tracked repos
+nb --repo <hash> ...                Override auto-detected repo
+nb info                             Data layout and file structure
+
+nb serve [--stop|--fg]              Manage the dashboard server
+nb open                             Open dashboard in browser
 ```
 
 ## Dashboard
 
-Port **8150**. URL: `http://localhost:8150/#<hash>`
+Port **8150** (production) or **5173** (Vite dev).
 
-**Two tabs:**
-- **Overview** — capacity timeline, next-up per project, readiness scores, collapsible project details
-- **Planning** — single-project focus, inline est50/est90 editing, atomic checkboxes, gaps analysis, critical path
+Key components:
+- **CapacityTimeline** — SVAR Gantt with tasks, buffers, status icons
+- **GanttTaskBar** — custom bar with warning emojis (🧩🔥🎲) and status (▶✓)
+- **GanttDetailPanel** — inline editing of est50/est90/risk/status/atomic
+- **QuickEstimate** — preset buttons (⅕ ¼ ½ ¾ 1 2) + custom input
+- **NextUpPanel** — next task per project
+- **ReadinessPanel** — readiness scoring with factors
+- **ProjectCard** — collapsible detail with task table
 
-**Auto-refresh:** Polls every 2s. Data changes soft-refresh. JS/CSS changes trigger full reload. Server restart detected automatically.
+**Contract UI architecture** (see `dashboard/src/Architecture.md`):
+- Contract: pure TypeScript interface describing what the page needs
+- Page: Svelte component, accepts only the contract as a prop
+- Host: adapter that implements the contract by hitting the API
+
+## CCPM Buffer Math
+
+The dashboard shows critical chain buffers:
+- **Work (est50)** — sum of aggressive estimates
+- **Buffer (CCPM)** — `sqrt(sum((est90 - est50)²))` per project
+- **Total with buffer** — what fits in the schedule
+- Buffers appear as 🛡️ segments at the end of each project on the Gantt
+
+## What to avoid
+
+- **Don't use `npm run build` for quick checks** — use `npm run check` (svelte-check)
+- **Don't try to proxy WebSockets through Vite** — unreliable, connect directly to :8150 in dev
+- **Don't guess at library APIs** — write a small isolated test first (e.g., the LayerChart debugging session)
+- **Don't inline HTML then extract components later** — extract from the start
+- **Don't use LayerChart's data-mode Rect with float data** — it doesn't render (we switched to SVAR Gantt)
+- **Don't use Python's `http.server` + `websockets` on the same port** — they can't share. aiohttp handles both natively.
